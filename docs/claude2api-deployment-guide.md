@@ -1,10 +1,10 @@
 # Claude2API 部署文档
 
-> 当前维护仓库：https://github.com/laiyangde/claude2api 。当前部署统一使用扩展思考，`effort` 默认 `low`，模型列表展示 4 个基础 ID，旧的 `-thinking` 名称仍兼容。下文第 1–9 节保留首次部署记录；fork 更新方式见第 10 节；最新部署记录见第 11 节。
+> 当前维护仓库：https://github.com/laiyangde/claude2api 。当前部署支持代理管理与账号独立出口，并保留统一扩展思考、`effort` 默认 `low`、4 个基础模型 ID 及旧 `-thinking` 名称兼容。下文第 1–9 节保留首次部署记录；fork 更新方式见第 10 节；最新部署记录见第 12 节。
 
 部署日期：2026-09-29。服务器：`192.168.28.61`，CentOS 7 / x86_64。
 
-**当前状态（18:26）：新版本已部署，容器健康，后台页面和 API 鉴权正常；现有 1 个账号、1 个 API Key 及运行配置保留。真实模型调用由用户随后测试。**
+**当前状态（20:34）：代理管理版本已通过 Git 提交、推送和服务器拉取流程部署，容器健康。现有 1 个账号、1 个 API Key 及运行配置保留；旧账号继续跟随系统统一出口。真实模型调用未在本次发布中执行。**
 
 ## 1. 访问地址与凭据
 
@@ -425,3 +425,43 @@ cd /opt/claude2api
 cp -p /opt/claude2api-releases/effort-20260929-182319/compose.previous.yaml compose.deploy.yaml
 docker compose -f compose.deploy.yaml up -d --no-build --wait --wait-timeout 90
 ```
+
+## 12. 代理管理部署（2026-09-29 20:34）
+
+本次先将代理管理和上一版已上线的 effort / 统一扩展思考改动提交并推送至 GitHub `main`，服务器从同一仓库拉取并核对完整提交后构建。未使用本地工作区源码包发布。
+
+| 项目 | 实际值 |
+| --- | --- |
+| 运行源码提交 | `0edbfa6c602c2bbac5f4f81b4427a58819a56fa2` |
+| 镜像 | `claude2api:fork-0edbfa6c602c` |
+| 镜像 ID | `sha256:cad96517e4b6837fbe070536e3ea076a1942d2825b53bb944e74a44fdeaa7775` |
+| 源码目录 | `/opt/claude2api` |
+| 构建文件 | `/opt/claude2api/Dockerfile.deploy` |
+| 发布记录目录 | `/opt/claude2api-releases/proxies-0edbfa6c602c` |
+| Compose 文件 | `/opt/claude2api/compose.deploy.yaml` |
+| 上一版镜像 | `claude2api:effort-20260929-182319`，仍保留 |
+
+新增「代理管理」支持维护 HTTP、HTTPS、SOCKS5、SOCKS5H 代理；「账号管理」可切换指定代理或恢复系统统一出口。批量导入每行支持 `sessionKey [代理地址]`，相同地址自动复用，未填代理时跟随系统配置。导入查询、状态刷新、API 请求、镜像请求均使用账号选定的出口。有关联账号的代理不可直接删除。
+
+启动时已完成 SQLite 结构迁移。部署前后核对了配置文件摘要、账号身份记录摘要、API Key 记录摘要和持久化挂载，均一致。原有账号和 Key 数量均为 1，原账号 `proxy_id` 为空，仍使用统一出口；没有添加测试代理或修改真实账号的出口。
+
+验证结果：
+
+- 本地离线测试和服务器 Docker 构建阶段的全部离线测试通过；真实上游及独立 API 服务集成测试按第 10 节排除。
+- 容器健康检查为 `healthy`，工作站访问后台与静态脚本均为 HTTP 200，页面包含代理管理和可选代理导入入口。
+- 现有管理密码登录正常；管理账号、代理列表接口正常，无凭据访问返回 HTTP 401。
+- 原 API Key 的 Bearer 和 `x-api-key` 鉴权均正常，模型列表仍返回 4 个基础 ID；普通 API Key 无权访问代理管理。
+- 非法代理协议、错误导入格式、负数代理 ID 返回 HTTP 400，未写入数据；非法 effort 仍返回 HTTP 400。
+- 未执行真实 Claude.ai 对话或修改真实账号代理；出口路由已在发布前通过隔离的本地模拟代理与浏览器端到端测试验证。
+
+`deployment-manifest.json` 与 `deployment-checks.json` 已更新。发布记录目录保存构建日志、部署前后摘要及上一版 Compose 配置。运行镜像使用上表中的源码提交；之后仅补充部署文档的提交不改变镜像版本。
+
+如需回滚本次镜像：
+
+```bash
+cd /opt/claude2api
+cp -p /opt/claude2api-releases/proxies-0edbfa6c602c/compose.previous.yaml compose.deploy.yaml
+docker compose -f compose.deploy.yaml up -d --no-build --wait --wait-timeout 90
+```
+
+上一版不支持账号独立代理，回滚后所有账号将使用系统统一出口；数据库和代理记录保留。
