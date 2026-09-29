@@ -323,3 +323,12 @@ docker compose -f compose.deploy.yaml up -d --wait --wait-timeout 90
 首次迁移前需处理服务器已有的源码改动，避免 `git pull` 覆盖或冲突。CentOS 7 如无法使用新 Alpine 运行时，可沿用首次部署的固定运行时镜像，仅替换从 fork 编译的 `/app/claude2api` 二进制；Go 构建阶段必须运行适配器测试。
 
 模型列表应包含 `claude-sonnet-5-5`、`claude-sonnet-5-5-thinking`，共 8 个 ID；默认模型仍为 `claude-sonnet-4-6`。`GET /v1/models` 仅验证服务暴露的名称，真实对话需另行验证。
+### 本次 fork 部署验证（2026-09-29）
+
+- 已部署源码提交：`2303a9aa18cabb509acc7b075a70cce5600629d7`。
+- 运行镜像：`claude2api:fork-2303a9a`，镜像 ID：`sha256:8c021de2425bd98233ff92054b04c6334f296642b95d8400a4d23abdd3a6079d`。
+- 服务器通过 HTTPS 从 fork 拉取代码，使用 `Dockerfile.deploy` 构建；Go 依赖源为 `https://goproxy.cn,direct`，运行时沿用首次部署的固定镜像。
+- 适配器测试通过：`CGO_ENABLED=0 go test ./internal/adapter -skip 'Test(OpenAI|Anthropic)SDK' -count=1`。两项 SDK 集成测试依赖运行中的 API 服务，在构建容器中连接失败，因此未纳入构建验证。
+- 容器健康状态：`healthy`；现有管理员密码登录成功，未覆盖配置文件。
+- 现有 API Key 的 Bearer 和 `x-api-key` 鉴权均通过，模型接口返回 8 个 ID，包含 `claude-sonnet-5-5` 及其 `-thinking` 版本。
+- 按要求未创建备份；现有数据库和配置挂载保留。真实上游模型响应未验证。
