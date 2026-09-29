@@ -19,10 +19,10 @@
 Docker Compose 一键部署
 
 ```bash
-git clone https://github.com/basketikun/claude2api.git
+git clone https://github.com/laiyangde/claude2api.git
 cd claude2api
 cp config.example.yaml config.yaml
-docker compose up -d
+docker compose -f docker-compose.local.yml up -d --build
 ```
 
 ## 核心功能
@@ -86,6 +86,7 @@ sk-ant-sid01-yyyyyyyy
 - `claude-sonnet-4-6`
 - `claude-haiku-4-5-20251001`
 - `claude-sonnet-5`
+- `claude-sonnet-5-5`
 
 实际可用性取决于账号权限和 Claude.ai 上游状态，请以 `GET /v1/models` 的返回结果为准。
 
