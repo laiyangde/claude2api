@@ -2,6 +2,8 @@ package service
 
 import "encoding/json"
 
+const DefaultEffort = "low"
+
 // UserInfo 是账号信息。
 type UserInfo struct {
 	Email   string
@@ -41,6 +43,7 @@ type Prompt struct {
 	RawRequest  json.RawMessage
 	ForceInline bool
 	MaxTokens   int
+	Effort      string
 	Temperature *float64
 	TopP        *float64
 	Stop        []string

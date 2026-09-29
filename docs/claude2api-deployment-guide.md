@@ -1,10 +1,10 @@
 # Claude2API 部署文档
 
-> 当前维护仓库：https://github.com/laiyangde/claude2api 。新增 `claude-sonnet-5-5` 和 `claude-sonnet-5-5-thinking`，服务共暴露 8 个模型 ID。实际模型响应取决于 Claude.ai 账号与上游支持。下文第 1–9 节保留首次部署记录；fork 更新方式见第 10 节。
+> 当前维护仓库：https://github.com/laiyangde/claude2api 。当前部署统一使用扩展思考，`effort` 默认 `low`，模型列表展示 4 个基础 ID，旧的 `-thinking` 名称仍兼容。下文第 1–9 节保留首次部署记录；fork 更新方式见第 10 节；最新部署记录见第 11 节。
 
 部署日期：2026-09-29。服务器：`192.168.28.61`，CentOS 7 / x86_64。
 
-**当前状态：服务已部署，容器健康、后台登录与 API 鉴权正常，容器重建后配置和 API Key 保留。账号池尚未导入 Claude.ai 账号，真实模型响应尚未验证。**
+**当前状态（18:26）：新版本已部署，容器健康，后台页面和 API 鉴权正常；现有 1 个账号、1 个 API Key 及运行配置保留。真实模型调用由用户随后测试。**
 
 ## 1. 访问地址与凭据
 
@@ -295,35 +295,86 @@ SQLite 使用 WAL。备份时短暂停止本服务并复制整个数据目录，
 
 ## 10. Fork 源码部署与更新
 
-源码仓库：https://github.com/laiyangde/claude2api ，分支 `main`。
+正式部署流程固定为：**本地修改并测试 → 本地 Git 提交 → 推送 GitHub `main` → 服务器从 GitHub 拉取 → 核对提交 → 构建镜像并更新服务 → 验证并记录版本**。
 
-新环境使用源码构建，确保包含 fork 中的模型改动：
+部署仓库为 https://github.com/laiyangde/claude2api.git ，分支为 `main`。本地 `origin` 使用该仓库的 SSH 地址也可以，服务器使用上述 HTTPS 地址。仅执行本地 `git commit` 不会更新服务器能拉取的代码，必须完成 `git push`。
+
+后续部署默认按此流程执行，不再上传未提交的工作区源码包作为正式发布版本。第 11 节记录的源码快照部署是历史例外，不作为后续操作模板。
+
+### 10.1 本地测试、提交并推送
+
+在本地项目目录执行，先确认当前分支为 `main`，并检查本次需要发布的修改：
+
+```bash
+git branch --show-current
+git status --short
+git diff
+go test ./... -skip '^(TestOpenAISDKToolCall|TestAnthropicSDKToolCall|TestGetUserInfo|TestSendMessage|TestUploadFile)$' -count=1
+```
+
+测试通过后，使用 `git add -p` 选择本次修改；新增文件需要先用 `git add -- 实际文件路径` 明确加入。不要将运行配置、数据库或凭据提交到 Git。
+
+```bash
+git add -p
+git diff --cached
+git commit -m "Describe the deployment changes"
+git push origin main
+git rev-parse HEAD
+```
+
+记录最后输出的完整提交 SHA，作为服务器部署时的 `expected_commit`。推送失败时先解决推送问题，服务器部署必须使用已成功推送的提交。
+
+### 10.2 服务器首次部署
+
+新环境在服务器上从同一仓库克隆源码构建。首次启动前设置 `config.yaml` 中的管理密码：
 
 ```bash
 git clone https://github.com/laiyangde/claude2api.git
 cd claude2api
 cp config.example.yaml config.yaml
-# 先设置 config.yaml 中的管理密码，再启动服务。
+```
+
+编辑生成的 `config.yaml`，设置管理密码后启动：
+
+```bash
 docker compose -f docker-compose.local.yml up -d --build
 ```
 
+### 10.3 现有服务器拉取、构建并更新
+
 现有服务器使用 `/opt/claude2api/compose.deploy.yaml`，更新时只替换镜像，保留端口、挂载、数据库和现有 `config.yaml`。管理员密码以服务器当前配置为准，不在 Git 中保存，也不要用示例配置覆盖。
 
+通过 `ssh root@192.168.28.61` 登录后，先检查 `git status --short`，处理服务器上已有的源码修改，确保构建使用的源码与目标提交一致。服务器专用的 `Dockerfile.deploy`、Compose 配置及运行数据应保留，不能用清理命令一并删除。
+
+将下面的 `expected_commit` 替换为第 10.1 节记录的完整提交 SHA，再执行：
+
 ```bash
+set -eu
 cd /opt/claude2api
+expected_commit="替换为本地已推送的完整提交SHA"
 git remote set-url origin https://github.com/laiyangde/claude2api.git
+test "$(git branch --show-current)" = "main"
 git pull --ff-only origin main
-revision=$(git rev-parse --short HEAD)
-docker build -t "claude2api:fork-$revision" .
-# 将 compose.deploy.yaml 的 image 设置为上一步生成的 claude2api:fork-<revision>。
-docker compose -f compose.deploy.yaml config --quiet
-docker compose -f compose.deploy.yaml up -d --wait --wait-timeout 90
+test "$(git rev-parse HEAD)" = "$expected_commit"
+revision=$(git rev-parse --short=12 HEAD)
+docker build --pull=false -f Dockerfile.deploy -t "claude2api:fork-$revision" .
 ```
 
-首次迁移前需处理服务器已有的源码改动，避免 `git pull` 覆盖或冲突。CentOS 7 如无法使用新 Alpine 运行时，可沿用首次部署的固定运行时镜像，仅替换从 fork 编译的 `/app/claude2api` 二进制；Go 构建阶段必须运行适配器测试。
+如果服务器拉取后的提交与 `expected_commit` 不一致，先核对版本，不能继续部署其他提交。当前 CentOS 7 服务器使用 `Dockerfile.deploy`，沿用已验证的固定运行时镜像，仅替换从仓库源码编译的 `/app/claude2api`；Go 构建阶段必须通过离线测试。
 
-模型列表应包含 `claude-sonnet-5-5`、`claude-sonnet-5-5-thinking`，共 8 个 ID；默认模型仍为 `claude-sonnet-4-6`。`GET /v1/models` 仅验证服务暴露的名称，真实对话需另行验证。
-### 本次 fork 部署验证（2026-09-29）
+构建成功后，把 `compose.deploy.yaml` 中 `claude2api` 服务的 `image` 改为本次生成的 `claude2api:fork-<12位提交SHA>`，其余运行配置保持不变，再执行：
+
+```bash
+docker compose -f compose.deploy.yaml config --quiet
+docker compose -f compose.deploy.yaml up -d --no-build --wait --wait-timeout 90
+docker compose -f compose.deploy.yaml ps
+```
+
+最后验证容器健康、后台页面、现有 API Key、模型列表和参数校验。更新 `/opt/claude2api/deployment-manifest.json` 与本部署文档，记录实际部署时间、完整 Git 提交 SHA、镜像标签及镜像 ID；正式 Git 发布的 `source_has_local_changes` 应为 `false`。真实模型调用按当次要求由用户或部署人员验证。
+
+模型列表当前应包含 `claude-sonnet-4-6`、`claude-haiku-4-5-20251001`、`claude-sonnet-5`、`claude-sonnet-5-5`，共 4 个 ID；默认模型仍为 `claude-sonnet-4-6`。旧的 `-thinking` 名称作为兼容别名接受。`GET /v1/models` 仅验证服务暴露的名称，真实对话需另行验证。
+
+### 首次 fork 部署验证（2026-09-29，历史记录）
 
 - 已部署源码提交：`2303a9aa18cabb509acc7b075a70cce5600629d7`。
 - 运行镜像：`claude2api:fork-2303a9a`，镜像 ID：`sha256:8c021de2425bd98233ff92054b04c6334f296642b95d8400a4d23abdd3a6079d`。
@@ -332,3 +383,45 @@ docker compose -f compose.deploy.yaml up -d --wait --wait-timeout 90
 - 容器健康状态：`healthy`；现有管理员密码登录成功，未覆盖配置文件。
 - 现有 API Key 的 Bearer 和 `x-api-key` 鉴权均通过，模型接口返回 8 个 ID，包含 `claude-sonnet-5-5` 及其 `-thinking` 版本。
 - 按要求未创建备份；现有数据库和配置挂载保留。真实上游模型响应未验证。
+
+## 11. Effort 与统一扩展思考部署（2026-09-29 18:26，历史快照部署）
+
+本次从本地工作区快照构建，基于提交 `13c44171d81d36aa4dc0c478d502b0722e3c72cf`，包含尚未提交的 effort 与统一思考改动；并非仅部署该提交。服务器原有 Git 检出保留，实际运行源码位置以 `deployment-manifest.json` 为准。
+
+此记录保留当时的实际操作。后续部署应使用第 10 节的本地提交、推送 GitHub、服务器拉取流程，不沿用本节的工作区快照发布方式。
+
+| 项目 | 实际值 |
+| --- | --- |
+| 运行镜像 | `claude2api:effort-20260929-182319` |
+| 镜像 ID | `sha256:78a20dfcd1200dec98e28b144be4d0195d17bb62e85f2a1eae9f778d4ff5cbf5` |
+| 源码与构建目录 | `/opt/claude2api-releases/effort-20260929-182319` |
+| 源码包 SHA-256 | `1417695fa42190a66e411c1161f637cced8c05443516e7748516d28c50603d1e` |
+| Compose 文件 | `/opt/claude2api/compose.deploy.yaml` |
+| 上一版镜像 | `claude2api:fork-2303a9a`，仍保留 |
+
+本次行为：
+
+- 上游 completion 请求必带 `effort`，客户端未传或传 `null` 时默认 `low`。
+- `/v1/chat/completions` 的 `reasoning_effort`、`/v1/responses` 的 `reasoning.effort` 仅接受 `low`、`medium`、`high`、`xhigh`。
+- `/v1/messages` 的 `output_config.effort` 额外接受 `max`，发送上游前转换为 `xhigh`。
+- 三个接口均兼容顶层 `effort`；非法值或相互冲突的字段返回 HTTP 400。
+- 所有会话在创建前统一设置 `paprika_mode: "extended"`，不再区分思考和非思考模型。
+
+验证结果：
+
+- Docker 构建阶段全部离线测试通过，包括参数默认值、档位校验、`max` 转换、上游请求体和扩展思考设置；跳过需要真实上游或独立 API 服务的集成测试。
+- 容器为 `healthy`；从部署工作站访问后台为 HTTP 200，页面包含新参数说明。
+- 原有 API Key 的 Bearer 与 `x-api-key` 鉴权均为 HTTP 200，无凭据请求仍为 HTTP 401。
+- 模型列表返回 4 个基础 ID；6 项非法 effort / 参数冲突请求均在 API 层返回 HTTP 400。
+- 部署前后配置文件摘要、账号身份记录、API Key 记录及挂载路径一致，账号数与 Key 数均为 1。
+- 未发送真实 Claude.ai 对话请求，留给用户测试。
+
+已更新 `/opt/claude2api/deployment-manifest.json` 和 `deployment-checks.json`。本次部署目录保存源码包、构建文件、前后验证记录及上一版 Compose 配置；数据库和 `config.yaml` 继续使用原挂载。
+
+如需切回上一版镜像：
+
+```bash
+cd /opt/claude2api
+cp -p /opt/claude2api-releases/effort-20260929-182319/compose.previous.yaml compose.deploy.yaml
+docker compose -f compose.deploy.yaml up -d --no-build --wait --wait-timeout 90
+```

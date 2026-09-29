@@ -14,6 +14,8 @@ import (
 // responsesRequest 是 Responses API 请求。
 type responsesRequest struct {
 	Model        string          `json:"model"`
+	Effort       *string         `json:"effort"`
+	Reasoning    effortOptions   `json:"reasoning"`
 	Instructions string          `json:"instructions"`
 	Input        json.RawMessage `json:"input"`
 	Stream       bool            `json:"stream"`
@@ -29,6 +31,11 @@ func OpenAIResponses(c *gin.Context) {
 	raw, err := bindRequest(c, &req)
 	if err != nil {
 		apiError(c, http.StatusBadRequest, "无效请求体: "+err.Error())
+		return
+	}
+	effort, err := resolveEffort("reasoning.effort", req.Reasoning.Effort, req.Effort, false)
+	if err != nil {
+		apiError(c, http.StatusBadRequest, err.Error())
 		return
 	}
 	msgs, images := normalizeResponseInput(req.Input)
@@ -48,6 +55,7 @@ func OpenAIResponses(c *gin.Context) {
 		return
 	}
 	prompt.RawRequest = raw
+	prompt.Effort = effort
 	prompt.MaxTokens, prompt.Temperature, prompt.TopP = req.MaxTokens, req.Temperature, req.TopP
 	if len(tools) > 0 {
 		if req.Stream {

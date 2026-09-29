@@ -1,6 +1,8 @@
 package service
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"sync"
 
@@ -11,40 +13,71 @@ import (
 	"github.com/bogdanfinn/tls-client/profiles"
 )
 
+type outboundProxyKey struct{}
+
+func WithOutboundProxy(ctx context.Context, proxy string) context.Context {
+	return context.WithValue(ctx, outboundProxyKey{}, proxy)
+}
+
 type ProxyRoundTripper struct {
-	hc    tlsclient.HttpClient
-	mu    sync.Mutex
-	proxy string
+	mu      sync.Mutex
+	clients map[string]tlsclient.HttpClient
 }
 
 func NewProxyRoundTripper() *ProxyRoundTripper {
-	hc, _ := tlsclient.NewHttpClient(tlsclient.NewNoopLogger(),
+	return &ProxyRoundTripper{clients: make(map[string]tlsclient.HttpClient)}
+}
+
+/** Each cached transport has an immutable exit, isolating concurrent requests. */
+func (p *ProxyRoundTripper) clientFor(proxy string) (tlsclient.HttpClient, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if hc := p.clients[proxy]; hc != nil {
+		return hc, nil
+	}
+	hc, err := tlsclient.NewHttpClient(tlsclient.NewNoopLogger(),
 		tlsclient.WithClientProfile(profiles.Chrome_146),
-		// 长超时避免镜像 SSE 被代理 CONNECT 截断。
+		/** Keep long-running mirror SSE connections open. */
 		tlsclient.WithTimeoutSeconds(3600),
 		tlsclient.WithInsecureSkipVerify(),
+		tlsclient.WithProxyUrl(proxy),
 		tlsclient.WithNotFollowRedirects())
+	if err != nil {
+		return nil, fmt.Errorf("初始化出口代理失败，请检查代理配置")
+	}
 	hc.SetCookieJar(nil)
-	p := &ProxyRoundTripper{hc: hc, proxy: config.Get().Proxy}
-	_ = hc.SetProxy(p.proxy)
-	return p
+	/** Bound stale transports without interrupting active streams. */
+	if len(p.clients) >= 128 {
+		for key, old := range p.clients {
+			old.CloseIdleConnections()
+			delete(p.clients, key)
+			break
+		}
+	}
+	p.clients[proxy] = hc
+	return hc, nil
 }
 
 func (p *ProxyRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	p.mu.Lock()
-	if proxy := config.Get().Proxy; proxy != p.proxy {
-		_ = p.hc.SetProxy(proxy)
-		p.proxy = proxy
+	proxy, ok := req.Context().Value(outboundProxyKey{}).(string)
+	if !ok {
+		proxy = config.Get().Proxy
 	}
-	p.mu.Unlock()
-	fr, _ := fhttp.NewRequestWithContext(req.Context(), req.Method, req.URL.String(), req.Body)
+	hc, err := p.clientFor(proxy)
+	if err != nil {
+		return nil, err
+	}
+	fr, err := fhttp.NewRequestWithContext(req.Context(), req.Method, req.URL.String(), req.Body)
+	if err != nil {
+		return nil, err
+	}
 	for k, values := range req.Header {
 		for _, value := range values {
 			fr.Header.Add(k, value)
 		}
 	}
 	fr.Host, fr.ContentLength = req.Host, req.ContentLength
-	resp, err := p.hc.Do(fr)
+	resp, err := hc.Do(fr)
 	if err != nil {
 		return nil, err
 	}

@@ -3,6 +3,7 @@ package repository
 import (
 	"time"
 
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
@@ -13,6 +14,8 @@ type Account struct {
 	OrgUUID   string            `json:"org_uuid" gorm:"column:org_uuid"`
 	Cookies   map[string]string `json:"-" gorm:"serializer:json"`
 	Status    string            `json:"status,omitempty"`
+	ProxyID   *uint             `json:"proxy_id" gorm:"index"`
+	Proxy     *Proxy            `json:"-" gorm:"constraint:OnDelete:SET NULL;"`
 	CreatedAt time.Time         `json:"created_at"`
 	UpdatedAt time.Time         `json:"updated_at"`
 }
@@ -20,7 +23,7 @@ type Account struct {
 // LoadAccounts 读取全部账号。
 func LoadAccounts() []Account {
 	var out []Account
-	if err := db.Order("id ASC").Find(&out).Error; err != nil {
+	if err := db.Preload("Proxy").Order("id ASC").Find(&out).Error; err != nil {
 		return []Account{}
 	}
 	return out
@@ -32,7 +35,7 @@ func AccountByEmail(email string) *Account {
 		return nil
 	}
 	var a Account
-	if db.Where("email = ?", email).First(&a).Error != nil {
+	if db.Preload("Proxy").Where("email = ?", email).First(&a).Error != nil {
 		return nil
 	}
 	return &a
@@ -40,20 +43,31 @@ func AccountByEmail(email string) *Account {
 
 // UpsertAccount 写入或更新账号。
 func UpsertAccount(a *Account) error {
-	return db.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "email"}},
-		UpdateAll: true,
-	}).Create(a).Error
+	return db.Transaction(func(tx *gorm.DB) error {
+		if a.ProxyID != nil {
+			var proxy Proxy
+			if err := tx.First(&proxy, *a.ProxyID).Error; err != nil {
+				return err
+			}
+		}
+		return tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "email"}},
+			UpdateAll: true,
+		}).Omit(clause.Associations).Create(a).Error
+	})
 }
 
 // UpdateAccount 修改指定账号。
 func UpdateAccount(email string, mutate func(*Account)) bool {
-	a := AccountByEmail(email)
-	if a == nil {
-		return false
-	}
-	mutate(a)
-	return db.Save(a).Error == nil
+	/** Keep background refreshes from overwriting a concurrent proxy switch. */
+	return db.Transaction(func(tx *gorm.DB) error {
+		var a Account
+		if err := tx.Where("email = ?", email).First(&a).Error; err != nil {
+			return err
+		}
+		mutate(&a)
+		return tx.Omit(clause.Associations).Save(&a).Error
+	}) == nil
 }
 
 // DeleteAccount 删除账号。

@@ -15,17 +15,17 @@ func ListModels(c *gin.Context) {
 	now := time.Now().Unix()
 	data := make([]gin.H, 0)
 	for _, id := range supportedModels {
-		for _, model := range []string{id, id + "-thinking"} {
-			data = append(data, gin.H{
-				"id": model, "object": "model", "created": now, "owned_by": "anthropic",
-			})
-		}
+		data = append(data, gin.H{
+			"id": id, "object": "model", "created": now, "owned_by": "anthropic",
+		})
 	}
 	c.JSON(http.StatusOK, gin.H{"object": "list", "data": data})
 }
 
 type openAIChatRequest struct {
 	Model             string          `json:"model"`
+	Effort            *string         `json:"effort"`
+	ReasoningEffort   *string         `json:"reasoning_effort"`
 	Messages          []openAIMessage `json:"messages"`
 	Stream            bool            `json:"stream"`
 	Tools             json.RawMessage `json:"tools"`
@@ -119,6 +119,11 @@ func OpenAIChat(c *gin.Context) {
 		apiError(c, http.StatusBadRequest, "无效请求体: "+err.Error())
 		return
 	}
+	effort, err := resolveEffort("reasoning_effort", req.ReasoningEffort, req.Effort, false)
+	if err != nil {
+		apiError(c, http.StatusBadRequest, err.Error())
+		return
+	}
 	if len(req.Messages) == 0 {
 		apiError(c, http.StatusBadRequest, "messages 不能为空")
 		return
@@ -133,6 +138,7 @@ func OpenAIChat(c *gin.Context) {
 		return
 	}
 	prompt.RawRequest = raw
+	prompt.Effort = effort
 	prompt.MaxTokens, prompt.Temperature, prompt.TopP, prompt.Stop = req.MaxTokens, req.Temperature, req.TopP, parseStops(req.Stop)
 	if prompt.MaxTokens == 0 {
 		prompt.MaxTokens = req.MaxCompletion

@@ -29,7 +29,7 @@ func InitDB() error {
 	if sqlDB, err := conn.DB(); err == nil {
 		sqlDB.SetMaxOpenConns(1)
 	}
-	if err := conn.AutoMigrate(&Account{}, &APIKey{}, &APILog{}); err != nil {
+	if err := conn.AutoMigrate(&Proxy{}, &Account{}, &APIKey{}, &APILog{}); err != nil {
 		return fmt.Errorf("建表失败: %w", err)
 	}
 	db = conn

@@ -30,6 +30,7 @@ function initAdmin(initialPage = "accounts", currentRole = "admin") {
   const $ = (sel) => adminRoot.querySelector(sel);
 
   let ACCOUNTS = [];
+  let PROXIES = [];
 
 let filterStatus = "all";
 let searchKw = "";
@@ -217,12 +218,12 @@ function renderTable() {
   const rows = filteredAccounts();
 
   if (!ACCOUNTS.length) {
-    body.innerHTML = `<tr><td colspan="7" class="empty">暂无账号</td></tr>`;
+    body.innerHTML = `<tr><td colspan="8" class="empty">暂无账号</td></tr>`;
     $("#pager").innerHTML = "";
     return;
   }
   if (!rows.length) {
-    body.innerHTML = `<tr><td colspan="7" class="empty">没有符合条件的账号</td></tr>`;
+    body.innerHTML = `<tr><td colspan="8" class="empty">没有符合条件的账号</td></tr>`;
     $("#pager").innerHTML = "";
     return;
   }
@@ -237,12 +238,14 @@ function renderTable() {
       <td>${start + i + 1}</td>
       <td class="mono">${esc(a.email)}</td>
       <td>${statusBadge(a.status)}</td>
+      <td class="account-proxy" title="${esc(a.proxy_url || "系统管理中的统一出口代理")}">${esc(accountProxyLabel(a))}</td>
       <td class="mono">${esc(fmtTime(a.created_at) || "—")}</td>
       <td>${esc(fmtSurvived(a.created_at))}</td>
       <td class="mono">${esc(fmtTime(a.updated_at) || "—")}</td>
       <td>
         <button class="btn-sm act-refresh">刷新</button>
         <button class="btn-sm act-detail">详情</button>
+        <button class="btn-sm act-proxy">切换代理</button>
         <button class="btn-sm btn-danger act-del">删除</button>
       </td>
     </tr>`)
@@ -349,6 +352,15 @@ async function importAccounts() {
   if (!text.trim()) return showMsg("请输入 sessionKey", "err");
   const btn = $("#btn-import-submit");
   btn.disabled = true;
+  const errors = $("#import-errors");
+  errors.replaceChildren();
+  errors.classList.add("hidden");
+  const addError = (message) => {
+    const item = document.createElement("li");
+    item.textContent = message;
+    errors.append(item);
+    errors.classList.remove("hidden");
+  };
   try {
     const r = await api("/api/accounts/import", "POST", { session_keys: text }, true);
     const reader = r.body.getReader(), decoder = new TextDecoder();
@@ -362,16 +374,21 @@ async function importAccounts() {
         const line = event.split("\n").find((line) => line.startsWith("data:"));
         if (!line) continue;
         result = JSON.parse(line.slice(5));
+        if (result.error) addError(`第 ${result.line} 行：${result.error}`);
         btn.textContent = result.done ? "导入完成" : "导入中…";
         setProgress("#import-progress", result.completed ?? result.total, result.total, `成功 ${result.imported}，失败 ${result.failed}`);
       }
       if (done) break;
     }
-    $("#import-keys").value = "";
-    $("#import-mask").classList.add("hidden");
+    if (!result?.done) throw new Error("导入连接中断，请刷新账号列表确认结果");
+    if (!result.failed) {
+      $("#import-keys").value = "";
+      $("#import-mask").classList.add("hidden");
+    }
     await loadAccounts();
     showMsg(`导入完成：成功 ${result.imported}，失败 ${result.failed}`, result.failed ? "err" : "ok");
   } catch (e) {
+    addError(e.message);
     showMsg("导入失败: " + e.message, "err");
   } finally {
     btn.disabled = false;
@@ -468,6 +485,8 @@ function openDetail(email) {
       ] || a.status,
     ],
     ["组织 UUID", a.org_uuid || "—"],
+    ["出口代理", accountProxyLabel(a)],
+    ["代理地址", a.proxy_url || "使用系统管理中的统一出口配置"],
     ["创建时间", fmtTime(a.created_at) || "—"],
     ["已存活", fmtSurvived(a.created_at)],
     ["更新时间", fmtTime(a.updated_at) || "—"],
@@ -487,6 +506,114 @@ function openDetail(email) {
 
 function closeDetail() {
   $("#detail-mask").classList.add("hidden");
+}
+
+function accountProxyLabel(account) {
+  return account.proxy_id ? account.proxy_name || account.proxy_url || "代理不存在" : "系统统一出口";
+}
+
+function displayProxyURL(address) {
+  try {
+    const url = new URL(address);
+    return `${url.protocol}//${url.username || url.password ? "***@" : ""}${url.host}`;
+  } catch {
+    return "地址无效";
+  }
+}
+
+async function loadProxies() {
+  const data = await api("/api/proxies");
+  PROXIES = data.proxies || [];
+  $("#proxies-body").innerHTML = PROXIES.length ? PROXIES.map((p) => `
+    <tr data-id="${p.id}">
+      <td>${esc(p.name)}</td>
+      <td class="mono proxy-address">${esc(displayProxyURL(p.url))}</td>
+      <td>${p.account_count}</td>
+      <td><button class="btn-sm act-proxy-edit">编辑</button> <button class="btn-sm btn-danger act-proxy-del">删除</button></td>
+    </tr>`).join("") : '<tr><td colspan="4" class="empty">暂无代理，点击「新增代理」或在导入账号时填写代理地址。</td></tr>';
+}
+
+function refreshProxies() {
+  return loadProxies().catch((e) => showMsg("加载代理失败: " + e.message, "err"));
+}
+
+function openProxyEditor(id = 0) {
+  const proxy = PROXIES.find((p) => p.id === id);
+  if (id && !proxy) return;
+  $("#detail-title").textContent = proxy ? "编辑代理" : "新增代理";
+  $("#detail-body").innerHTML = `
+    <form id="proxy-edit-form" class="proxy-form" data-id="${id}">
+      <label class="field">名称（可选）<input name="name" class="inp" value="${esc(proxy?.name || "")}" placeholder="如：香港出口 1"></label>
+      <label class="field">代理地址<input name="url" class="inp" required autocomplete="off" spellcheck="false" value="${esc(proxy?.url || "")}" placeholder="http://user:pass@host:8080 或 socks5h://host:1080"></label>
+      <p class="block-desc">${proxy ? `当前关联 ${proxy.account_count} 个账号。保存后，后续请求将使用新地址。` : "保存后可在账号管理中选择此代理。"}</p>
+      <p class="form-error hidden" role="alert"></p>
+      <div class="modal-actions"><button type="button" class="btn close-proxy-form">取消</button><button type="submit" class="btn btn-primary">保存代理</button></div>
+    </form>`;
+  $("#detail-mask").classList.remove("hidden");
+  $("#proxy-edit-form input").focus();
+}
+
+async function openAccountProxy(email) {
+  try {
+    await loadProxies();
+    const account = ACCOUNTS.find((a) => a.email === email);
+    if (!account) return;
+    $("#detail-title").textContent = "切换账号代理";
+    $("#detail-body").innerHTML = `
+      <form id="account-proxy-form" class="proxy-form" data-email="${esc(email)}">
+        <p class="proxy-address">${esc(email)}</p>
+        <label class="field">出口代理<select name="proxy_id" class="inp sel">
+          <option value="">系统统一出口</option>
+          ${PROXIES.map((p) => `<option value="${p.id}"${p.id === account.proxy_id ? " selected" : ""}>${esc(p.name)} · ${esc(displayProxyURL(p.url))}</option>`).join("")}
+        </select></label>
+        <p class="block-desc">选择「系统统一出口」后跟随系统管理的配置；系统代理留空时直连。更多代理可在「代理管理」中添加。</p>
+        <p class="form-error hidden" role="alert"></p>
+        <div class="modal-actions"><button type="button" class="btn close-proxy-form">取消</button><button type="submit" class="btn btn-primary">保存</button></div>
+      </form>`;
+    $("#detail-mask").classList.remove("hidden");
+    $("#account-proxy-form select").focus();
+  } catch (e) {
+    showMsg("加载代理失败: " + e.message, "err");
+  }
+}
+
+async function saveProxyForm(event) {
+  const form = event.target;
+  if (!["proxy-edit-form", "account-proxy-form"].includes(form.id)) return;
+  event.preventDefault();
+  const button = form.querySelector('[type="submit"]');
+  const error = form.querySelector(".form-error");
+  button.disabled = true;
+  error.classList.add("hidden");
+  try {
+    if (form.id === "proxy-edit-form") {
+      await api("/api/proxies", "POST", { id: Number(form.dataset.id), name: form.elements.name.value, url: form.elements.url.value });
+    } else {
+      await api("/api/accounts/proxy", "POST", { email: form.dataset.email, proxy_id: Number(form.elements.proxy_id.value) || null });
+    }
+    closeDetail();
+    showMsg("代理已保存，后续请求生效", "ok");
+    await Promise.all([loadAccounts(), refreshProxies()]);
+  } catch (e) {
+    error.textContent = e.message;
+    error.classList.remove("hidden");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function deleteProxy(id) {
+  const proxy = PROXIES.find((p) => p.id === id);
+  if (!proxy) return;
+  if (proxy.account_count) return showMsg("代理仍有关联账号，请先在账号管理中切换这些账号的代理", "err");
+  if (!await confirmDialog(`确认删除代理 ${proxy.name}？`, { title: "删除代理" })) return;
+  try {
+    await api("/api/proxies/delete", "POST", { id });
+    await loadProxies();
+    showMsg("代理已删除", "ok");
+  } catch (e) {
+    showMsg("删除失败: " + e.message, "err");
+  }
 }
 
 async function loadConfig() {
@@ -689,6 +816,7 @@ function switchPage(name) {
   if (name === "api") $("#api-base").textContent = window.location.origin;
   if (name === "chat") loadChatModels();
   if (name === "accounts") loadAccountModels();
+  if (name === "proxies") refreshProxies();
   if (name === "system") loadConfig();
   if (name === "keys") loadKeys();
   if (name === "logs") loadLogs();
@@ -964,9 +1092,22 @@ $("#account-models").addEventListener("click", (e) => {
 });
 
 $("#btn-refresh").addEventListener("click", refreshAccountsPage);
+$("#btn-proxy-create").addEventListener("click", () => openProxyEditor());
+$("#btn-proxy-refresh").addEventListener("click", refreshProxies);
+$("#proxies-body").addEventListener("click", (e) => {
+  const row = e.target.closest("tr[data-id]");
+  if (!row) return;
+  if (e.target.classList.contains("act-proxy-edit")) openProxyEditor(Number(row.dataset.id));
+  if (e.target.classList.contains("act-proxy-del")) deleteProxy(Number(row.dataset.id));
+});
+$("#detail-body").addEventListener("submit", saveProxyForm);
+$("#detail-body").addEventListener("click", (e) => {
+  if (e.target.classList.contains("close-proxy-form")) closeDetail();
+});
 $("#btn-refresh-all").addEventListener("click", refreshAllAccounts);
 $("#btn-import").addEventListener("click", () => {
   $("#import-progress").classList.add("hidden");
+  $("#import-errors").classList.add("hidden");
   $("#import-mask").classList.remove("hidden");
   $("#import-keys").focus();
 });
@@ -1120,6 +1261,7 @@ $("#acc-body").addEventListener("click", (e) => {
   if (e.target.classList.contains("act-refresh"))
     refreshAccount(email, e.target);
   else if (e.target.classList.contains("act-detail")) openDetail(email);
+  else if (e.target.classList.contains("act-proxy")) openAccountProxy(email);
   else if (e.target.classList.contains("act-del")) deleteOne(email);
 });
 

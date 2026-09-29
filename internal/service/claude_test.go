@@ -34,7 +34,7 @@ func TestSendMessage(t *testing.T) {
 	}
 
 	for i := 0; i < 3; i++ {
-		convID, err := claudeAI.CreateConversation("claude-sonnet-5", false)
+		convID, err := claudeAI.CreateConversation("claude-sonnet-5")
 		if err != nil {
 			t.Fatalf("CreateConversation 失败: %v", err)
 		}

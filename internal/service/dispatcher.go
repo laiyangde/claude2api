@@ -24,7 +24,11 @@ type accountClient struct {
 	ready      bool
 }
 
-func clientFor(acct *repository.Account, proxy string) *accountClient {
+func clientFor(acct *repository.Account) (*accountClient, error) {
+	proxy, err := AccountProxy(acct)
+	if err != nil {
+		return nil, err
+	}
 	key := SessionKey(acct)
 	apiIndexLock.Lock()
 	defer apiIndexLock.Unlock()
@@ -33,7 +37,7 @@ func clientFor(acct *repository.Account, proxy string) *accountClient {
 		client = &accountClient{ClaudeAI: NewClaudeAI(key, proxy, acct.Email, acct.OrgUUID), sessionKey: key, proxy: proxy}
 		apiClients[acct.Email] = client
 	}
-	return client
+	return client, nil
 }
 
 // pickAPIAccount 轮询可用账号。
@@ -97,7 +101,11 @@ func (Dispatcher) Complete(reqModel string, prompt Prompt, onText func(string)) 
 		}
 		email := acct.Email
 		res.Account = email
-		lease := clientFor(acct, s.Proxy)
+		lease, err := clientFor(acct)
+		if err != nil {
+			lastErr = err
+			continue
+		}
 		lease.Lock()
 		client := lease.ClaudeAI
 		if !lease.ready {
@@ -110,7 +118,6 @@ func (Dispatcher) Complete(reqModel string, prompt Prompt, onText func(string)) 
 			lease.ready = true
 		}
 
-		think := strings.HasSuffix(reqModel, "-thinking")
 		model := strings.TrimSuffix(reqModel, "-thinking")
 
 		if acct.OrgUUID == "" {
@@ -144,7 +151,7 @@ func (Dispatcher) Complete(reqModel string, prompt Prompt, onText func(string)) 
 			slog.Info("[API] 提示词过长，改用附件承载", "limit", s.MaxChatHistoryLength)
 		}
 
-		convID, err := client.CreateConversation(model, think)
+		convID, err := client.CreateConversation(model)
 		if err != nil {
 			lastErr = err
 			if s.RemoveInvalidAccount && strings.Contains(err.Error(), "account_session_invalid") {

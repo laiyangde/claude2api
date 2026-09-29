@@ -12,6 +12,8 @@ import (
 
 type anthropicRequest struct {
 	Model         string             `json:"model"`
+	Effort        *string            `json:"effort"`
+	OutputConfig  effortOptions      `json:"output_config"`
 	System        json.RawMessage    `json:"system"`
 	Messages      []anthropicMessage `json:"messages"`
 	Stream        bool               `json:"stream"`
@@ -34,6 +36,11 @@ func AnthropicMessages(c *gin.Context) {
 	raw, err := bindRequest(c, &req)
 	if err != nil {
 		apiError(c, http.StatusBadRequest, "无效请求体: "+err.Error())
+		return
+	}
+	effort, err := resolveEffort("output_config.effort", req.OutputConfig.Effort, req.Effort, true)
+	if err != nil {
+		apiError(c, http.StatusBadRequest, err.Error())
 		return
 	}
 	if len(req.Messages) == 0 {
@@ -66,6 +73,7 @@ func AnthropicMessages(c *gin.Context) {
 	prompt.ForceInline = true
 	prompt.Text += "\n\nContinue the conversation above with only the assistant's next response."
 	prompt.RawRequest = raw
+	prompt.Effort = effort
 	prompt.MaxTokens, prompt.Temperature, prompt.TopP, prompt.Stop = req.MaxTokens, req.Temperature, req.TopP, req.StopSequences
 	if len(tools) > 0 {
 		if req.Stream {

@@ -421,6 +421,33 @@ body {
 .col-act {
   width: 180px;
 }
+#page-accounts .col-act {
+  width: 245px;
+}
+.account-proxy {
+  min-width: 125px;
+  max-width: 240px;
+  overflow-wrap: anywhere;
+}
+.proxy-address {
+  overflow-wrap: anywhere;
+}
+.proxy-form .field + .field {
+  margin-top: 16px;
+}
+.proxy-form .inp {
+  width: 100%;
+}
+.form-error,
+.import-errors {
+  color: var(--err);
+  overflow-wrap: anywhere;
+}
+.import-errors {
+  max-height: 180px;
+  overflow-y: auto;
+  padding-left: 22px;
+}
 .acc-table td:last-child {
   white-space: nowrap;
 }

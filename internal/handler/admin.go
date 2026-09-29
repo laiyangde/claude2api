@@ -30,7 +30,11 @@ func AdminImportAccounts(c *gin.Context) {
 		return
 	}
 
-	items := parseImportSessionKeys(body.SessionKeys)
+	items, err := parseImportSessionKeys(body.SessionKeys)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	if len(items) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "没有可导入的 sessionKey"})
 		return
@@ -52,27 +56,55 @@ func AdminImportAccounts(c *gin.Context) {
 		} else {
 			imported++
 		}
-		send("progress", gin.H{"total": len(items), "completed": imported + failed, "imported": imported, "failed": failed, "email": result.email, "error": result.err})
+		send("progress", gin.H{"total": len(items), "completed": imported + failed, "imported": imported, "failed": failed, "email": result.email, "error": result.err, "line": result.line})
 	}
 	send("done", gin.H{"done": true, "total": len(items), "imported": imported, "failed": failed})
 	slog.Info("[导入] 批量导入完成", "total", len(items), "imported", imported, "failed", failed)
 }
 
-func parseImportSessionKeys(text string) []string {
-	seen := map[string]bool{}
-	items := []string{}
-	for _, key := range strings.Fields(text) {
-		if !seen[key] {
-			seen[key] = true
-			items = append(items, key)
-		}
-	}
-	return items
+type importItem struct {
+	sessionKey string
+	proxy      string
+	line       int
 }
 
-type importResult struct{ email, err string }
+func parseImportSessionKeys(text string) ([]importItem, error) {
+	seen := map[string]string{}
+	items := []importItem{}
+	for i, line := range strings.Split(text, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		if len(fields) > 2 {
+			return nil, fmt.Errorf("第 %d 行格式错误：每行填写 sessionKey，空格后可选填代理地址", i+1)
+		}
+		item := importItem{sessionKey: fields[0], line: i + 1}
+		if len(fields) == 2 {
+			proxy, err := service.NormalizeProxyURL(fields[1])
+			if err != nil {
+				return nil, fmt.Errorf("第 %d 行：%w", i+1, err)
+			}
+			item.proxy = proxy
+		}
+		if previous, exists := seen[item.sessionKey]; exists {
+			if previous != item.proxy {
+				return nil, fmt.Errorf("第 %d 行的 sessionKey 重复且代理不同，请保留一条", i+1)
+			}
+			continue
+		}
+		seen[item.sessionKey] = item.proxy
+		items = append(items, item)
+	}
+	return items, nil
+}
 
-func importAccounts(items []string) <-chan importResult {
+type importResult struct {
+	email, err string
+	line       int
+}
+
+func importAccounts(items []importItem) <-chan importResult {
 	results := make(chan importResult, len(items))
 	go func() {
 		defer close(results)
@@ -80,11 +112,15 @@ func importAccounts(items []string) <-chan importResult {
 		// ponytail: 固定 10 并发，上游限流变化时再改为配置项。
 		sem := make(chan struct{}, 10)
 		slog.Info("[导入] 批量导入开始", "total", len(items))
-		for _, key := range items {
+		for _, item := range items {
 			wg.Go(func() {
 				sem <- struct{}{}
 				defer func() { <-sem }()
-				client := service.NewClaudeAI(key, config.Get().Proxy, key)
+				key, proxy := item.sessionKey, item.proxy
+				if proxy == "" {
+					proxy = config.Get().Proxy
+				}
+				client := service.NewClaudeAI(key, proxy, key)
 				info, err := client.GetUserInfo()
 				if err != nil || info == nil || info.Email == "" {
 					slog.Warn("[导入] 查询账号信息失败", "err", err)
@@ -92,15 +128,24 @@ func importAccounts(items []string) <-chan importResult {
 					if err != nil && strings.Contains(err.Error(), "account_session_invalid") {
 						message = "sessionKey 已失效或格式错误"
 					}
-					results <- importResult{err: message}
+					results <- importResult{err: message, line: item.line}
 					return
 				}
-				if err := repository.UpsertAccount(&repository.Account{Email: info.Email, OrgUUID: info.OrgUUID, Cookies: map[string]string{"sessionKey": key}, Status: "active"}); err != nil {
+				account := &repository.Account{Email: info.Email, OrgUUID: info.OrgUUID, Cookies: map[string]string{"sessionKey": key}, Status: "active"}
+				if item.proxy != "" {
+					p, err := repository.EnsureProxy(item.proxy, service.ProxyDisplayURL(item.proxy))
+					if err != nil {
+						results <- importResult{email: info.Email, err: "保存代理失败", line: item.line}
+						return
+					}
+					account.ProxyID = &p.ID
+				}
+				if err := repository.UpsertAccount(account); err != nil {
 					slog.Warn("[导入] 保存账号失败", "email", info.Email, "err", err)
-					results <- importResult{email: info.Email, err: "保存账号失败"}
+					results <- importResult{email: info.Email, err: "保存账号失败", line: item.line}
 					return
 				}
-				results <- importResult{email: info.Email}
+				results <- importResult{email: info.Email, line: item.line}
 			})
 		}
 		wg.Wait()

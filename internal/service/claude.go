@@ -14,7 +14,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"claude2api/internal/utils"
@@ -32,12 +31,10 @@ const claudeAIUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
 	"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
 
 type ClaudeAI struct {
-	orgUUID  string
-	client   tlsclient.HttpClient
-	headers  map[string]string
-	modeMu   sync.Mutex
-	modeSet  bool
-	thinking bool
+	orgUUID string
+	client  tlsclient.HttpClient
+	headers map[string]string
+	initErr error
 }
 
 // NewClaudeAI 构造 Claude Web 客户端。
@@ -48,17 +45,15 @@ func NewClaudeAI(sessionKey, proxy, identity string, orgUUID ...string) *ClaudeA
 		tlsclient.WithTimeoutSeconds(3000),
 		tlsclient.WithCookieJar(jar),
 		tlsclient.WithInsecureSkipVerify(),
+		tlsclient.WithProxyUrl(proxy),
 	)
 	if err != nil {
-		client, _ = tlsclient.NewHttpClient(tlsclient.NewNoopLogger())
-	}
-	if proxy != "" {
-		_ = client.SetProxy(proxy)
+		return &ClaudeAI{initErr: fmt.Errorf("初始化 Claude 客户端失败，请检查出口代理配置")}
 	}
 	if u, parseErr := url.Parse(claudeAIBaseURL); parseErr == nil {
 		client.SetCookies(u, []*fhttp.Cookie{{Name: "sessionKey", Value: sessionKey, Domain: "claude.ai"}})
 	}
-	claudeAI := &ClaudeAI{client: client, headers: BuildHeaders(identity), modeSet: true}
+	claudeAI := &ClaudeAI{client: client, headers: BuildHeaders(identity)}
 	if len(orgUUID) > 0 {
 		claudeAI.orgUUID = orgUUID[0]
 	}
@@ -66,6 +61,9 @@ func NewClaudeAI(sessionKey, proxy, identity string, orgUUID ...string) *ClaudeA
 }
 
 func (claudeAI *ClaudeAI) request(method, target string, body io.Reader) (*fhttp.Request, error) {
+	if claudeAI.initErr != nil {
+		return nil, claudeAI.initErr
+	}
 	req, err := fhttp.NewRequest(method, target, body)
 	if err != nil {
 		return nil, err
@@ -223,8 +221,8 @@ func (claudeAI *ClaudeAI) BigContextAttachment(text string) []map[string]any {
 	}}
 }
 
-// updatePaprika 切换思考模式。
-func (claudeAI *ClaudeAI) updatePaprika(value any) error {
+/** updatePaprika keeps API conversations in extended mode. */
+func (claudeAI *ClaudeAI) updatePaprika() error {
 	reqBody, err := json.Marshal(map[string]any{
 		"settings": map[string]any{
 			"has_started_claudeai_onboarding":  true,
@@ -232,7 +230,7 @@ func (claudeAI *ClaudeAI) updatePaprika(value any) error {
 			"dismissed_claudeai_banners":       []any{},
 			"enabled_artifacts_attachments":    true,
 			"enabled_web_search":               true,
-			"paprika_mode":                     value,
+			"paprika_mode":                     "extended",
 		},
 	})
 	if err != nil {
@@ -258,20 +256,11 @@ func (claudeAI *ClaudeAI) updatePaprika(value any) error {
 }
 
 // CreateConversation 新建会话。
-func (claudeAI *ClaudeAI) CreateConversation(model string, think bool) (string, error) {
-	claudeAI.modeMu.Lock()
-	if !claudeAI.modeSet || claudeAI.thinking != think {
-		var mode any
-		if think {
-			mode = "extended"
-		}
-		if err := claudeAI.updatePaprika(mode); err != nil {
-			claudeAI.modeMu.Unlock()
-			return "", err
-		}
-		claudeAI.modeSet, claudeAI.thinking = true, think
+func (claudeAI *ClaudeAI) CreateConversation(model string) (string, error) {
+	/** Reapply the mode because mirrored web sessions can change account settings. */
+	if err := claudeAI.updatePaprika(); err != nil {
+		return "", err
 	}
-	claudeAI.modeMu.Unlock()
 
 	reqBody, err := json.Marshal(map[string]any{
 		"uuid":                             uuid.NewString(),
@@ -318,10 +307,15 @@ func (claudeAI *ClaudeAI) CreateConversation(model string, think bool) (string, 
 
 // SendMessage 发送提示词。
 func (claudeAI *ClaudeAI) SendMessage(convID, model string, prompt Prompt, attachments []map[string]any, files []string, onText func(string)) (int, error) {
+	effort := prompt.Effort
+	if effort == "" {
+		effort = DefaultEffort
+	}
 	// 固定字段对齐网页端请求。
 	body := map[string]any{
 		"prompt": prompt.Text,
 		"model":  model,
+		"effort": effort,
 		"personalized_styles": []map[string]any{
 			{
 				"type":       "default",

@@ -29,15 +29,16 @@ docker compose -f docker-compose.local.yml up -d --build
 
 - **官网镜像**：提供 Claude.ai 官网镜像和账号池选择页面，可随机或指定可用账号进入镜像站，并自动维护访问所需的 Cookie、浏览器指纹与会话信息。
 - **号池管理**：支持批量导入 Claude.ai 账号，自动获取邮箱和组织信息，并提供账号状态查看、手动刷新、失效清理与定期巡检。
+- **代理管理**：支持维护多个 HTTP / HTTPS / SOCKS5 / SOCKS5H 出口代理，账号可独立选择或切换代理，未指定时跟随系统统一出口配置。
 - **账号轮询**：API 请求自动轮询可用账号，请求失败时可按配置换号重试，避免单个账号异常影响服务。
 - **OpenAI 兼容**：支持 `POST /v1/chat/completions` 和 `POST /v1/responses` 接口，可接入 OpenAI SDK 及支持自定义 Base URL 的客户端。
 - **Anthropic 兼容**：支持 `POST /v1/messages` 接口，可接入 Anthropic SDK、Claude Code 等兼容客户端。
 - **开发工具接入**：支持配置 Codex CLI、Claude Code 使用本服务的兼容 API。
-- **模型列表**：提供 `GET /v1/models` 接口，统一返回当前支持的基础模型及 Thinking 模型。
+- **模型列表**：提供 `GET /v1/models` 接口，统一返回当前支持的基础模型。
 - **流式响应**：OpenAI 与 Anthropic 接口均支持流式和非流式输出。
 - **多轮对话**：支持 System Prompt、user / assistant 历史消息以及多轮上下文拼接。
 - **多模态输入**：支持 OpenAI 与 Anthropic 格式的 Base64 图片输入，并自动上传至 Claude.ai。
-- **扩展思考**：模型名添加 `-thinking` 后缀即可启用扩展思考模式。
+- **扩展思考**：所有模型统一启用扩展思考，支持通过 `effort` 调整档位，默认 `low`。
 - **工具调用**：支持 OpenAI `tools / tool_calls`、Responses `function_call` 和 Anthropic `tools / tool_use`，兼容流式、非流式及工具结果回传。
 - **长上下文处理**：提示词超过配置阈值时自动转换为文本附件，减少超长上下文直接提交造成的问题。
 - **会话清理**：支持请求完成后自动删除 Claude.ai 上游会话。
@@ -70,23 +71,30 @@ docker compose -f docker-compose.local.yml up -d --build
 
 ## 账号导入
 
-进入管理后台的「账号管理」，点击「批量导入」，每行填写一个 `sessionKey`：
+进入管理后台的「账号管理」，点击「批量导入」，每行填写一个 `sessionKey`，空格后可选填代理地址：
 
 ```text
 sk-ant-sid01-xxxxxxxx
-sk-ant-sid01-yyyyyyyy
+sk-ant-sid01-yyyyyyyy http://user:pass@proxy.example.com:8080
+sk-ant-sid01-zzzzzzzz socks5h://proxy.example.com:1080
 ```
 
 导入任务会在后台执行，并自动查询账号信息。`sessionKey` 等同于账号登录凭据，请妥善保管。
 
+填写的代理会自动加入「代理管理」，相同地址会复用；账号信息查询、状态刷新、API 对话和网页镜像都使用账号选择的代理。未填写代理时使用「系统管理」中的统一出口代理，系统代理留空时直连。重复导入已有账号时，代理选择以本次导入为准，不填写则恢复跟随系统。
+
+在「代理管理」中可新增、编辑、删除代理；在「账号管理」中点击「切换代理」可选择已有代理或「系统统一出口」。修改代理对后续请求生效，已开始的请求继续使用原出口。有关联账号的代理需要先解除关联才能删除。代理地址须包含协议、主机和端口；用户名或密码中的空格、`@`、`#` 等特殊字符应进行 URL 编码。
+
 ### 支持的模型
 
-当前服务暴露以下基础模型，并同时提供对应的 `-thinking` 版本：
+当前服务暴露以下 4 个基础模型，均使用扩展思考模式：
 
 - `claude-sonnet-4-6`
 - `claude-haiku-4-5-20251001`
 - `claude-sonnet-5`
 - `claude-sonnet-5-5`
+
+旧的 `-thinking` 模型名称仍作为兼容别名接受，与对应基础模型行为一致，模型列表不再重复展示。
 
 实际可用性取决于账号权限和 Claude.ai 上游状态，请以 `GET /v1/models` 的返回结果为准。
 
@@ -220,6 +228,18 @@ curl http://localhost:8787/v1/messages \
 </details>
 
 ### 客户端接入
+
+三个兼容接口均支持设置 `effort`，最终发送到 Claude.ai completion 请求的顶层 `effort` 字段：
+
+| 接口 | 参数 | 可用值 |
+| --- | --- | --- |
+| `/v1/chat/completions` | `reasoning_effort` | `low`、`medium`、`high`、`xhigh` |
+| `/v1/responses` | `reasoning.effort` | `low`、`medium`、`high`、`xhigh` |
+| `/v1/messages` | `output_config.effort` | `low`、`medium`、`high`、`xhigh`、`max`；其中 `max` 转为 `xhigh` |
+
+三个接口也接受顶层 `effort`，遵循各接口相同的取值限制。同时提供接口参数和顶层 `effort` 时，转换后的值必须相同，否则返回 HTTP 400。非法值（包括空字符串）和错误类型返回 HTTP 400；不传或传 `null` 时默认 `low`，每次上游 completion 请求都包含 `effort`。所有请求统一将 `paprika_mode` 设为 `"extended"`，不再区分思考与非思考模型。
+
+例如，Responses 请求使用 `"reasoning":{"effort":"xhigh"}`；Messages 请求使用 `"output_config":{"effort":"max"}`，两者均向上游发送 `"effort":"xhigh"`。
 
 Codex CLI 可通过自定义 OpenAI Base URL 使用 `/v1/responses`，Claude Code 可通过自定义 Anthropic Base URL 使用 `/v1/messages`；两者均填写本服务地址和后台创建的 API Key 即可。
 

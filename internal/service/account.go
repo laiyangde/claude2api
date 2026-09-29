@@ -17,6 +17,9 @@ type PublicAccount struct {
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
 	HasSession bool      `json:"has_session"`
+	ProxyID    *uint     `json:"proxy_id"`
+	ProxyName  string    `json:"proxy_name"`
+	ProxyURL   string    `json:"proxy_url"`
 }
 
 func SessionKey(account *repository.Account) string {
@@ -42,14 +45,20 @@ func PublicAccountView(account *repository.Account) *PublicAccount {
 	if account == nil {
 		return nil
 	}
-	return &PublicAccount{
+	view := &PublicAccount{
 		Email:      account.Email,
 		OrgUUID:    account.OrgUUID,
 		Status:     account.Status,
 		CreatedAt:  account.CreatedAt,
 		UpdatedAt:  account.UpdatedAt,
 		HasSession: SessionKey(account) != "",
+		ProxyID:    account.ProxyID,
 	}
+	if account.Proxy != nil {
+		view.ProxyName = account.Proxy.Name
+		view.ProxyURL = ProxyDisplayURL(account.Proxy.URL)
+	}
+	return view
 }
 
 // PublicAccounts 返回前端账号列表。
@@ -78,8 +87,12 @@ func RefreshAccount(email string) (*repository.Account, bool) {
 		return nil, false
 	}
 
-	client := NewClaudeAI(sessionKey, config.Get().Proxy, email)
-	info, err := client.GetUserInfo()
+	proxy, err := AccountProxy(account)
+	var info *UserInfo
+	if err == nil {
+		client := NewClaudeAI(sessionKey, proxy, email)
+		info, err = client.GetUserInfo()
+	}
 	if repository.AccountByEmail(account.Email) == nil {
 		return nil, false
 	}
