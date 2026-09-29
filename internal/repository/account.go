@@ -49,6 +49,9 @@ func UpsertAccount(a *Account) error {
 			if err := tx.First(&proxy, *a.ProxyID).Error; err != nil {
 				return err
 			}
+			if !proxy.Enabled {
+				return ErrProxyDisabled
+			}
 		}
 		return tx.Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "email"}},

@@ -100,7 +100,7 @@ func TestAccountProxyFallbackAndClientSwitch(t *testing.T) {
 		t.Fatalf("system exit: %+v %v", info, err)
 	}
 	id := uint(1)
-	acct.ProxyID, acct.Proxy = &id, &repository.Proxy{ID: id, URL: exitB}
+	acct.ProxyID, acct.Proxy = &id, &repository.Proxy{ID: id, URL: exitB, Enabled: true}
 	leaseB, err := clientFor(acct)
 	if err != nil || leaseA == leaseB {
 		t.Fatalf("switch did not replace cached client: %v", err)

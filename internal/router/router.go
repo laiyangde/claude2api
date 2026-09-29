@@ -31,6 +31,8 @@ func NewMainEngine() *gin.Engine {
 	admin.GET("/proxies", handler.AdminListProxies)
 	admin.POST("/proxies", handler.AdminSaveProxy)
 	admin.POST("/proxies/delete", handler.AdminDeleteProxy)
+	admin.POST("/proxies/check", handler.AdminCheckProxy)
+	admin.POST("/proxies/enabled", handler.AdminSetProxyEnabled)
 	admin.GET("/config", handler.AdminGetConfig)
 	admin.POST("/config", handler.AdminUpdateConfig)
 	admin.POST("/delete", handler.AdminDeleteAccount)

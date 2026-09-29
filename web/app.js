@@ -31,6 +31,8 @@ function initAdmin(initialPage = "accounts", currentRole = "admin") {
 
   let ACCOUNTS = [];
   let PROXIES = [];
+  const CHECKING_PROXIES = new Set();
+  let checkingAllProxies = false;
 
 let filterStatus = "all";
 let searchKw = "";
@@ -509,7 +511,10 @@ function closeDetail() {
 }
 
 function accountProxyLabel(account) {
-  return account.proxy_id ? account.proxy_name || account.proxy_url || "代理不存在" : "系统统一出口";
+  const label = account.proxy_id ? account.proxy_name || account.proxy_url || "代理不存在" : "系统统一出口";
+  if (account.proxy_enabled === false) return label + "（已停用）";
+  if (account.proxy_check_ok === false) return label + "（检测不可用）";
+  return label;
 }
 
 function displayProxyURL(address) {
@@ -524,13 +529,123 @@ function displayProxyURL(address) {
 async function loadProxies() {
   const data = await api("/api/proxies");
   PROXIES = data.proxies || [];
-  $("#proxies-body").innerHTML = PROXIES.length ? PROXIES.map((p) => `
+  renderProxies();
+}
+
+function proxyParts(address) {
+  try {
+    const url = new URL(address);
+    return { address: url.host, protocol: url.protocol.slice(0, -1) };
+  } catch { return { address: "地址无效", protocol: "—" }; }
+}
+
+function proxyCheckStatus(proxy) {
+  if (CHECKING_PROXIES.has(proxy.id)) return '<span class="proxy-badge checking">检测中…</span>';
+  if (proxy.last_check_ok == null || !proxy.last_checked_at) return '<span class="proxy-muted">未检测</span>';
+  const label = proxy.last_check_ok ? "可用" : "不可用";
+  const detail = [fmtTime(proxy.last_checked_at), proxy.last_status_code ? `HTTP ${proxy.last_status_code}` : "连接失败", `${proxy.last_latency_ms} ms`].join(" · ");
+  return `<span class="proxy-badge ${proxy.last_check_ok ? "available" : "unavailable"}">${label}</span>
+    <div class="proxy-check-detail">${esc(detail)}</div>
+    ${proxy.last_check_error ? `<div class="proxy-check-error">${esc(proxy.last_check_error)}</div>` : ""}`;
+}
+
+function renderProxies() {
+  const enabled = PROXIES.filter((p) => p.enabled).length;
+  const available = PROXIES.filter((p) => p.last_check_ok === true).length;
+  $("#proxy-summary").textContent = `共 ${PROXIES.length} 个代理，启用 ${enabled}，最近检测可用 ${available}`;
+  $("#btn-proxy-check-all").disabled = checkingAllProxies || CHECKING_PROXIES.size > 0 || !enabled;
+  $("#proxies-body").innerHTML = PROXIES.length ? PROXIES.map((p) => {
+    const parts = proxyParts(p.url), busy = CHECKING_PROXIES.has(p.id);
+    const customName = p.name && p.name !== p.url && p.name !== displayProxyURL(p.url);
+    return `
     <tr data-id="${p.id}">
-      <td>${esc(p.name)}</td>
-      <td class="mono proxy-address">${esc(displayProxyURL(p.url))}</td>
-      <td>${p.account_count}</td>
-      <td><button class="btn-sm act-proxy-edit">编辑</button> <button class="btn-sm btn-danger act-proxy-del">删除</button></td>
-    </tr>`).join("") : '<tr><td colspan="4" class="empty">暂无代理，点击「新增代理」或在导入账号时填写代理地址。</td></tr>';
+      <td class="proxy-address"><strong class="mono">${esc(parts.address)}</strong>${customName ? `<div class="proxy-check-detail">${esc(p.name)}</div>` : ""}</td>
+      <td>${esc(parts.protocol)}</td>
+      <td class="proxy-remark">${esc(p.remark || "—")}</td>
+      <td>${p.account_count ? `<button class="btn-link act-proxy-accounts" title="查看绑定账号">${p.account_count}</button>` : "0"}</td>
+      <td class="proxy-health">${proxyCheckStatus(p)}</td>
+      <td class="mono proxy-ip">${esc(p.exit_ip || "—")}</td>
+      <td><span class="proxy-badge ${p.enabled ? "available" : "disabled"}">${p.enabled ? "启用" : "停用"}</span></td>
+      <td class="proxy-actions">
+        <button class="btn-sm act-proxy-check"${busy || checkingAllProxies ? " disabled" : ""}>检测</button>
+        <button class="btn-sm act-proxy-edit"${busy ? " disabled" : ""}>编辑</button>
+        <button class="btn-sm act-proxy-toggle"${busy ? " disabled" : ""}>${p.enabled ? "停用" : "启用"}</button>
+        <button class="btn-sm btn-danger act-proxy-del"${busy ? " disabled" : ""}>删除</button>
+      </td>
+    </tr>`;
+  }).join("") : '<tr><td colspan="8" class="empty">暂无代理，点击「新增代理」或在导入账号时填写代理地址。</td></tr>';
+}
+
+async function checkProxy(id, notify = true) {
+  if (CHECKING_PROXIES.has(id)) return false;
+  CHECKING_PROXIES.add(id);
+  renderProxies();
+  try {
+    const data = await api("/api/proxies/check", "POST", { id });
+    const proxy = PROXIES.find((p) => p.id === id);
+    if (proxy) Object.assign(proxy, data.proxy);
+    if (notify) showMsg(data.proxy.last_check_ok ? "代理可用，出口 IP 已更新" : data.proxy.last_check_error || "代理不可用", data.proxy.last_check_ok ? "ok" : "err");
+    if (notify) await loadAccounts();
+    return data.proxy.last_check_ok === true;
+  } catch (e) {
+    if (notify) showMsg("检测失败: " + e.message, "err");
+    return false;
+  } finally {
+    CHECKING_PROXIES.delete(id);
+    renderProxies();
+  }
+}
+
+async function checkAllProxies() {
+  if (checkingAllProxies || CHECKING_PROXIES.size) return;
+  const ids = PROXIES.filter((p) => p.enabled).map((p) => p.id);
+  if (!ids.length) return;
+  checkingAllProxies = true;
+  $("#proxy-check-label").textContent = "正在检测代理";
+  let next = 0, completed = 0, available = 0;
+  setProgress("#proxy-check-progress", 0, ids.length);
+  renderProxies();
+  try {
+    await Promise.all(Array.from({ length: Math.min(4, ids.length) }, async () => {
+      while (next < ids.length) {
+        const id = ids[next++];
+        if (await checkProxy(id, false)) available++;
+        setProgress("#proxy-check-progress", ++completed, ids.length, `${completed}/${ids.length}，可用 ${available}`);
+      }
+    }));
+    showMsg(`检测完成：可用 ${available}，不可用或检测失败 ${ids.length - available}`, available === ids.length ? "ok" : "err");
+    await loadAccounts();
+  } finally {
+    checkingAllProxies = false;
+    $("#proxy-check-label").textContent = "代理检测完成";
+    renderProxies();
+  }
+}
+
+async function toggleProxy(id, button) {
+  const proxy = PROXIES.find((p) => p.id === id);
+  if (!proxy) return;
+  button.disabled = true;
+  try {
+    const data = await api("/api/proxies/enabled", "POST", { id, enabled: !proxy.enabled });
+    Object.assign(proxy, data.proxy);
+    renderProxies();
+    await loadAccounts();
+    showMsg(proxy.enabled ? "代理已启用，下次使用前会重新检测" : "代理已停用，保留绑定账号并跳过后续请求", "ok");
+  } catch (e) {
+    showMsg("切换状态失败: " + e.message, "err");
+    button.disabled = false;
+  }
+}
+
+async function showProxyAccounts(id) {
+  try {
+    const { accounts } = await api("/api/accounts");
+    const rows = accounts.filter((a) => a.proxy_id === id);
+    $("#detail-title").textContent = "绑定账号";
+    $("#detail-body").innerHTML = rows.length ? rows.map((a) => `<div class="dl-row"><span class="dl-val mono">${esc(a.email)}</span>${statusBadge(a.status)}</div>`).join("") : '<p class="block-desc">暂无绑定账号。</p>';
+    $("#detail-mask").classList.remove("hidden");
+  } catch (e) { showMsg("加载绑定账号失败: " + e.message, "err"); }
 }
 
 function refreshProxies() {
@@ -545,6 +660,7 @@ function openProxyEditor(id = 0) {
     <form id="proxy-edit-form" class="proxy-form" data-id="${id}">
       <label class="field">名称（可选）<input name="name" class="inp" value="${esc(proxy?.name || "")}" placeholder="如：香港出口 1"></label>
       <label class="field">代理地址<input name="url" class="inp" required autocomplete="off" spellcheck="false" value="${esc(proxy?.url || "")}" placeholder="http://user:pass@host:8080 或 socks5h://host:1080"></label>
+      <label class="field">备注（可选）<textarea name="remark" class="inp" rows="3" placeholder="用途、地区或其他说明">${esc(proxy?.remark || "")}</textarea></label>
       <p class="block-desc">${proxy ? `当前关联 ${proxy.account_count} 个账号。保存后，后续请求将使用新地址。` : "保存后可在账号管理中选择此代理。"}</p>
       <p class="form-error hidden" role="alert"></p>
       <div class="modal-actions"><button type="button" class="btn close-proxy-form">取消</button><button type="submit" class="btn btn-primary">保存代理</button></div>
@@ -564,7 +680,7 @@ async function openAccountProxy(email) {
         <p class="proxy-address">${esc(email)}</p>
         <label class="field">出口代理<select name="proxy_id" class="inp sel">
           <option value="">系统统一出口</option>
-          ${PROXIES.map((p) => `<option value="${p.id}"${p.id === account.proxy_id ? " selected" : ""}>${esc(p.name)} · ${esc(displayProxyURL(p.url))}</option>`).join("")}
+          ${PROXIES.map((p) => `<option value="${p.id}"${p.id === account.proxy_id ? " selected" : ""}${!p.enabled ? " disabled" : ""}>${esc(p.name)} · ${esc(displayProxyURL(p.url))}${!p.enabled ? "（已停用）" : p.last_check_ok === false ? "（检测不可用，使用前需复检）" : ""}</option>`).join("")}
         </select></label>
         <p class="block-desc">选择「系统统一出口」后跟随系统管理的配置；系统代理留空时直连。更多代理可在「代理管理」中添加。</p>
         <p class="form-error hidden" role="alert"></p>
@@ -587,7 +703,7 @@ async function saveProxyForm(event) {
   error.classList.add("hidden");
   try {
     if (form.id === "proxy-edit-form") {
-      await api("/api/proxies", "POST", { id: Number(form.dataset.id), name: form.elements.name.value, url: form.elements.url.value });
+      await api("/api/proxies", "POST", { id: Number(form.dataset.id), name: form.elements.name.value, url: form.elements.url.value, remark: form.elements.remark.value });
     } else {
       await api("/api/accounts/proxy", "POST", { email: form.dataset.email, proxy_id: Number(form.elements.proxy_id.value) || null });
     }
@@ -1094,9 +1210,13 @@ $("#account-models").addEventListener("click", (e) => {
 $("#btn-refresh").addEventListener("click", refreshAccountsPage);
 $("#btn-proxy-create").addEventListener("click", () => openProxyEditor());
 $("#btn-proxy-refresh").addEventListener("click", refreshProxies);
+$("#btn-proxy-check-all").addEventListener("click", checkAllProxies);
 $("#proxies-body").addEventListener("click", (e) => {
   const row = e.target.closest("tr[data-id]");
-  if (!row) return;
+  if (!row || e.target.disabled) return;
+  if (e.target.classList.contains("act-proxy-check")) checkProxy(Number(row.dataset.id));
+  if (e.target.classList.contains("act-proxy-toggle")) toggleProxy(Number(row.dataset.id), e.target);
+  if (e.target.classList.contains("act-proxy-accounts")) showProxyAccounts(Number(row.dataset.id));
   if (e.target.classList.contains("act-proxy-edit")) openProxyEditor(Number(row.dataset.id));
   if (e.target.classList.contains("act-proxy-del")) deleteProxy(Number(row.dataset.id));
 });

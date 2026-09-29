@@ -23,9 +23,10 @@ func AdminListProxies(c *gin.Context) {
 
 func AdminSaveProxy(c *gin.Context) {
 	var body struct {
-		ID   uint   `json:"id"`
-		Name string `json:"name"`
-		URL  string `json:"url"`
+		ID     uint   `json:"id"`
+		Name   string `json:"name"`
+		URL    string `json:"url"`
+		Remark string `json:"remark"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "请求格式错误"})
@@ -40,7 +41,7 @@ func AdminSaveProxy(c *gin.Context) {
 	if name == "" {
 		name = service.ProxyDisplayURL(address)
 	}
-	p := repository.Proxy{ID: body.ID, Name: name, URL: address}
+	p := repository.Proxy{ID: body.ID, Name: name, URL: address, Remark: strings.TrimSpace(body.Remark)}
 	if err := repository.SaveProxy(&p); err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "代理不存在"})
@@ -88,7 +89,9 @@ func AdminSetAccountProxy(c *gin.Context) {
 	}
 	email := strings.TrimSpace(body.Email)
 	if err := repository.SetAccountProxy(email, body.ProxyID); err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
+		if errors.Is(err, repository.ErrProxyDisabled) {
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		} else if errors.Is(err, gorm.ErrRecordNotFound) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "账号或代理不存在，请刷新后重试"})
 		} else {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "切换代理失败"})
@@ -96,4 +99,47 @@ func AdminSetAccountProxy(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"account": service.PublicAccountView(repository.AccountByEmail(email))})
+}
+
+func AdminCheckProxy(c *gin.Context) {
+	var body struct {
+		ID uint `json:"id"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.ID == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请选择代理"})
+		return
+	}
+	p, err := service.CheckProxy(c.Request.Context(), body.ID, true)
+	if err != nil {
+		proxyOperationError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"proxy": p})
+}
+
+func AdminSetProxyEnabled(c *gin.Context) {
+	var body struct {
+		ID      uint  `json:"id"`
+		Enabled *bool `json:"enabled"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.ID == 0 || body.Enabled == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请指定代理及启用状态"})
+		return
+	}
+	p, err := repository.SetProxyEnabled(body.ID, *body.Enabled)
+	if err != nil {
+		proxyOperationError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"proxy": p})
+}
+
+func proxyOperationError(c *gin.Context, err error) {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "代理不存在"})
+	} else if errors.Is(err, repository.ErrProxyChanged) {
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+	} else {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "检测未完成，请稍后重试"})
+	}
 }

@@ -57,5 +57,8 @@ func AccountProxy(account *repository.Account) (string, error) {
 	if account.Proxy == nil || account.Proxy.URL == "" {
 		return "", fmt.Errorf("账号代理不存在，请重新选择代理")
 	}
+	if !account.Proxy.Enabled {
+		return "", repository.ErrProxyDisabled
+	}
 	return account.Proxy.URL, nil
 }

@@ -43,12 +43,17 @@ func TestInvalidProxyRequestsFailBeforeStreamingOrStorage(t *testing.T) {
 	r.POST("/import", AdminImportAccounts)
 	r.POST("/proxies", AdminSaveProxy)
 	r.POST("/account-proxy", AdminSetAccountProxy)
+	r.POST("/check", AdminCheckProxy)
+	r.POST("/enabled", AdminSetProxyEnabled)
 	for _, tc := range []struct{ path, body string }{
 		{"/import", `{"session_keys":"key invalid-proxy"}`},
 		{"/import", `{"session_keys":"\n \r\n"}`},
 		{"/proxies", `{"url":"http://user:secret@host:99999"}`},
 		{"/proxies", `{"url":"file:///tmp/proxy"}`},
 		{"/account-proxy", `{"email":"user@example.com","proxy_id":-1}`},
+		{"/check", `{"id":0}`},
+		{"/enabled", `{"id":1}`},
+		{"/enabled", `{"id":1,"enabled":"false"}`},
 	} {
 		recorder := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))

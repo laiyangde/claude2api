@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -117,8 +118,21 @@ func importAccounts(items []importItem) <-chan importResult {
 				sem <- struct{}{}
 				defer func() { <-sem }()
 				key, proxy := item.sessionKey, item.proxy
+				account := &repository.Account{Cookies: map[string]string{"sessionKey": key}, Status: "active"}
 				if proxy == "" {
 					proxy = config.Get().Proxy
+				} else {
+					p, err := repository.EnsureProxy(proxy, service.ProxyDisplayURL(proxy))
+					if err != nil {
+						results <- importResult{err: "保存代理失败", line: item.line}
+						return
+					}
+					account.ProxyID, account.Proxy = &p.ID, p
+					proxy, err = service.EnsureAccountProxy(context.Background(), account)
+					if err != nil {
+						results <- importResult{err: err.Error(), line: item.line}
+						return
+					}
 				}
 				client := service.NewClaudeAI(key, proxy, key)
 				info, err := client.GetUserInfo()
@@ -131,15 +145,7 @@ func importAccounts(items []importItem) <-chan importResult {
 					results <- importResult{err: message, line: item.line}
 					return
 				}
-				account := &repository.Account{Email: info.Email, OrgUUID: info.OrgUUID, Cookies: map[string]string{"sessionKey": key}, Status: "active"}
-				if item.proxy != "" {
-					p, err := repository.EnsureProxy(item.proxy, service.ProxyDisplayURL(item.proxy))
-					if err != nil {
-						results <- importResult{email: info.Email, err: "保存代理失败", line: item.line}
-						return
-					}
-					account.ProxyID = &p.ID
-				}
+				account.Email, account.OrgUUID = info.Email, info.OrgUUID
 				if err := repository.UpsertAccount(account); err != nil {
 					slog.Warn("[导入] 保存账号失败", "email", info.Email, "err", err)
 					results <- importResult{email: info.Email, err: "保存账号失败", line: item.line}
@@ -159,7 +165,11 @@ func AdminRefreshAccount(c *gin.Context) {
 		Email string `json:"email"`
 	}
 	_ = c.ShouldBindJSON(&body)
-	account, removed := service.RefreshAccount(strings.TrimSpace(body.Email))
+	account, removed, err := service.RefreshAccount(strings.TrimSpace(body.Email))
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
 	if removed {
 		c.JSON(http.StatusOK, gin.H{"removed": 1})
 		return

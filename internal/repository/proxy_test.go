@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
@@ -126,5 +127,77 @@ func TestConcurrentProxyImportAndReimport(t *testing.T) {
 	}
 	if err := SaveProxy(&Proxy{URL: p.URL}); err == nil {
 		t.Fatal("duplicate address accepted")
+	}
+}
+
+func TestProxyHealthMigrationAndState(t *testing.T) {
+	setupProxyDB(t)
+	if err := db.Exec(`CREATE TABLE proxies (id integer PRIMARY KEY AUTOINCREMENT, name text, url text NOT NULL UNIQUE, created_at datetime, updated_at datetime)`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`INSERT INTO proxies (name, url) VALUES ('existing', 'http://host:8080')`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&Proxy{}, &Account{}); err != nil {
+		t.Fatal(err)
+	}
+	p, err := ProxyByID(1)
+	if err != nil || !p.Enabled || p.LastCheckOK != nil {
+		t.Fatalf("legacy defaults: %+v %v", p, err)
+	}
+	if err := UpsertAccount(&Account{Email: "bound@example.com", ProxyID: &p.ID}); err != nil {
+		t.Fatal(err)
+	}
+	check := ProxyCheckResult{CheckedAt: time.Now().UTC(), OK: true, StatusCode: 200, LatencyMS: 351, ExitIP: "203.0.113.1"}
+	if err := SaveProxyCheck(p, check); err != nil {
+		t.Fatal(err)
+	}
+	p, _ = ProxyByID(p.ID)
+	if p.LastCheckOK == nil || !*p.LastCheckOK || p.ExitIP != check.ExitIP || p.LastLatencyMS != 351 {
+		t.Fatalf("result not saved: %+v", p)
+	}
+	p.Remark = "region / note"
+	if err := SaveProxy(p); err != nil {
+		t.Fatal(err)
+	}
+	if p.Remark != "region / note" || p.LastCheckOK == nil || !*p.LastCheckOK {
+		t.Fatal("remark edit invalidated health")
+	}
+	beforeDisable := *p
+	disabled, err := SetProxyEnabled(p.ID, false)
+	if err != nil || disabled.Enabled {
+		t.Fatal("disable failed")
+	}
+	if AccountByEmail("bound@example.com").ProxyID == nil {
+		t.Fatal("disable removed account binding")
+	}
+	if err := SetAccountProxy("bound@example.com", &p.ID); !errors.Is(err, ErrProxyDisabled) {
+		t.Fatalf("disabled assignment: %v", err)
+	}
+	if err := UpsertAccount(&Account{Email: "new@example.com", ProxyID: &p.ID}); !errors.Is(err, ErrProxyDisabled) {
+		t.Fatalf("disabled import: %v", err)
+	}
+	if err := SaveProxyCheck(&beforeDisable, check); !errors.Is(err, ErrProxyChanged) {
+		t.Fatalf("stale check after disable: %v", err)
+	}
+	p, err = SetProxyEnabled(p.ID, true)
+	if err != nil || p.LastCheckedAt != nil || p.LastCheckOK != nil || p.ExitIP != "" {
+		t.Fatal("reactivation kept stale health")
+	}
+	beforeEdit := *p
+	p.URL = "http://other:8080"
+	if err := SaveProxy(p); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveProxyCheck(&beforeEdit, check); !errors.Is(err, ErrProxyChanged) {
+		t.Fatal("old address check accepted")
+	}
+	check.OK, check.ExitIP, check.Error = false, "", "timeout"
+	if err := SaveProxyCheck(p, check); err != nil {
+		t.Fatal(err)
+	}
+	p, _ = ProxyByID(p.ID)
+	if p.LastCheckOK == nil || *p.LastCheckOK || p.LastCheckError != "timeout" {
+		t.Fatal("failed check not saved")
 	}
 }

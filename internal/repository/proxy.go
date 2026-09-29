@@ -9,13 +9,24 @@ import (
 )
 
 var ErrProxyInUse = errors.New("代理仍有关联账号，请先切换这些账号的代理")
+var ErrProxyDisabled = errors.New("代理已停用，请先启用或选择其他代理")
+var ErrProxyChanged = errors.New("代理配置已变化，请重新检测")
 
 type Proxy struct {
-	ID        uint      `json:"id" gorm:"primaryKey"`
-	Name      string    `json:"name"`
-	URL       string    `json:"url" gorm:"uniqueIndex;not null"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID             uint       `json:"id" gorm:"primaryKey"`
+	Name           string     `json:"name"`
+	URL            string     `json:"url" gorm:"uniqueIndex;not null"`
+	Remark         string     `json:"remark"`
+	Enabled        bool       `json:"enabled" gorm:"not null;default:true"`
+	CheckRevision  uint64     `json:"-" gorm:"not null;default:0"`
+	LastCheckedAt  *time.Time `json:"last_checked_at"`
+	LastCheckOK    *bool      `json:"last_check_ok"`
+	LastStatusCode int        `json:"last_status_code"`
+	LastLatencyMS  int64      `json:"last_latency_ms"`
+	ExitIP         string     `json:"exit_ip"`
+	LastCheckError string     `json:"last_check_error"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
 }
 
 type ProxyView struct {
@@ -33,14 +44,79 @@ func SaveProxy(p *Proxy) error {
 	if p.ID == 0 {
 		return db.Create(p).Error
 	}
-	result := db.Model(&Proxy{}).Where("id = ?", p.ID).Updates(map[string]any{"name": p.Name, "url": p.URL})
+	return db.Transaction(func(tx *gorm.DB) error {
+		var old Proxy
+		if err := tx.First(&old, p.ID).Error; err != nil {
+			return err
+		}
+		updates := map[string]any{"name": p.Name, "url": p.URL, "remark": p.Remark}
+		if old.URL != p.URL {
+			clearProxyCheck(updates)
+		}
+		if err := tx.Model(&old).Updates(updates).Error; err != nil {
+			return err
+		}
+		return tx.First(p, p.ID).Error
+	})
+}
+
+func ProxyByID(id uint) (*Proxy, error) {
+	var p Proxy
+	err := db.First(&p, id).Error
+	return &p, err
+}
+
+/** A new address or reactivation must not reuse the old exit's health result. */
+func clearProxyCheck(updates map[string]any) {
+	updates["check_revision"] = gorm.Expr("check_revision + 1")
+	updates["last_checked_at"], updates["last_check_ok"] = nil, nil
+	updates["last_status_code"], updates["last_latency_ms"] = 0, 0
+	updates["exit_ip"], updates["last_check_error"] = "", ""
+}
+
+func SetProxyEnabled(id uint, enabled bool) (*Proxy, error) {
+	err := db.Transaction(func(tx *gorm.DB) error {
+		var p Proxy
+		if err := tx.First(&p, id).Error; err != nil {
+			return err
+		}
+		if p.Enabled == enabled {
+			return nil
+		}
+		updates := map[string]any{"enabled": enabled, "check_revision": gorm.Expr("check_revision + 1")}
+		if enabled {
+			clearProxyCheck(updates)
+		}
+		return tx.Model(&p).Updates(updates).Error
+	})
+	if err != nil {
+		return nil, err
+	}
+	return ProxyByID(id)
+}
+
+type ProxyCheckResult struct {
+	CheckedAt  time.Time
+	OK         bool
+	StatusCode int
+	LatencyMS  int64
+	ExitIP     string
+	Error      string
+}
+
+/** Discard checks for an address that was edited or toggled while in flight. */
+func SaveProxyCheck(p *Proxy, check ProxyCheckResult) error {
+	result := db.Model(&Proxy{}).Where("id = ? AND url = ? AND check_revision = ?", p.ID, p.URL, p.CheckRevision).
+		Updates(map[string]any{"last_checked_at": check.CheckedAt, "last_check_ok": check.OK,
+			"last_status_code": check.StatusCode, "last_latency_ms": check.LatencyMS,
+			"exit_ip": check.ExitIP, "last_check_error": check.Error})
 	if result.Error != nil {
 		return result.Error
 	}
 	if result.RowsAffected == 0 {
-		return gorm.ErrRecordNotFound
+		return ErrProxyChanged
 	}
-	return db.First(p, p.ID).Error
+	return nil
 }
 
 /** Importing the same address concurrently reuses one managed proxy. */
@@ -82,6 +158,9 @@ func SetAccountProxy(email string, proxyID *uint) error {
 			var p Proxy
 			if err := tx.First(&p, *proxyID).Error; err != nil {
 				return err
+			}
+			if !p.Enabled {
+				return ErrProxyDisabled
 			}
 		}
 		result := tx.Model(&Account{}).Where("email = ?", email).Update("proxy_id", proxyID)

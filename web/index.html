@@ -463,13 +463,19 @@
           </header>
           <div class="toolbar">
             <button id="btn-proxy-create" class="btn btn-primary">新增代理</button>
+            <button id="btn-proxy-check-all" class="btn">检测全部启用代理</button>
             <button id="btn-proxy-refresh" class="btn">刷新</button>
           </div>
-          <p class="block-desc">支持 HTTP、HTTPS、SOCKS5、SOCKS5H。编辑地址后，关联账号的后续请求使用新地址；删除前需先切换关联账号。</p>
+          <p id="proxy-summary" class="block-desc" aria-live="polite">正在加载代理…</p>
+          <p class="block-desc">账号使用前自动检测，结果缓存 5 分钟；跳过停用或检测不可用的代理。检测验证网络连通性和出口 IP，不代表 Claude 账号可用。</p>
+          <div id="proxy-check-progress" class="task-progress hidden" aria-live="polite">
+            <div><span id="proxy-check-label">正在检测代理</span><span class="task-progress-text"></span></div>
+            <progress value="0" max="1"></progress>
+          </div>
           <div class="table-area">
-            <table class="acc-table">
-              <thead><tr><th>名称</th><th>代理地址</th><th>关联账号</th><th class="col-act">操作</th></tr></thead>
-              <tbody id="proxies-body"><tr><td colspan="4" class="empty">加载中…</td></tr></tbody>
+            <table class="acc-table proxy-table">
+              <thead><tr><th>代理</th><th>协议</th><th>备注</th><th>绑定账号</th><th>最近检测</th><th>出口 IP</th><th>状态</th><th class="col-act">操作</th></tr></thead>
+              <tbody id="proxies-body"><tr><td colspan="8" class="empty">加载中…</td></tr></tbody>
             </table>
           </div>
         </section>

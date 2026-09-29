@@ -372,7 +372,7 @@ func ServeReverseProxy(w http.ResponseWriter, r *http.Request, onMain bool) {
 		ucOrig:         ucOrig,
 	}
 	ctx := context.WithValue(r.Context(), ctxKey{}, pc)
-	proxy, err := service.AccountProxy(record)
+	proxy, err := service.EnsureAccountProxy(r.Context(), record)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return

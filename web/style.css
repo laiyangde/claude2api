@@ -438,6 +438,21 @@ body {
 .proxy-form .inp {
   width: 100%;
 }
+.proxy-table { min-width: 1050px; }
+.proxy-table td { vertical-align: middle; }
+.proxy-table .col-act { width: 205px; }
+.proxy-health { min-width: 225px; }
+.proxy-remark { max-width: 220px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.proxy-ip { overflow-wrap: anywhere; }
+.proxy-check-detail { margin-top: 4px; color: var(--muted); font-size: 11px; }
+.proxy-check-error { margin-top: 4px; color: var(--err); font-size: 11px; max-width: 280px; }
+.proxy-muted { color: var(--muted); }
+.proxy-badge { display: inline-block; padding: 2px 7px; border-radius: 10px; font-size: 12px; white-space: nowrap; }
+.proxy-badge.available { color: #267743; background: #e1f5e7; }
+.proxy-badge.unavailable { color: var(--err); background: #fbe9e6; }
+.proxy-badge.disabled { color: var(--muted); background: #eceae5; }
+.proxy-badge.checking { color: #8b6516; background: #fff3cf; }
+.proxy-actions .btn-sm { margin-right: 2px; }
 .form-error,
 .import-errors {
   color: var(--err);

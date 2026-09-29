@@ -1,10 +1,12 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
 	"claude2api/internal/config"
 	"claude2api/internal/repository"
@@ -61,10 +63,22 @@ func pickAPIAccount() *repository.Account {
 		apiIndexLock.Unlock()
 		return nil
 	}
-	acct := usable[apiIndex%len(usable)]
+	start := apiIndex % len(usable)
 	apiIndex++
 	apiIndexLock.Unlock()
-	return &acct
+	/** Proxy failures skip candidates without consuming conversation retry attempts. */
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	for offset := range len(usable) {
+		acct := usable[(start+offset)%len(usable)]
+		if ctx.Err() != nil && acct.ProxyID != nil && !ProxyCheckFresh(acct.Proxy) {
+			continue
+		}
+		if _, err := EnsureAccountProxy(ctx, &acct); err == nil {
+			return &acct
+		}
+	}
+	return nil
 }
 
 // delConvSem 限制后台删会话并发。
